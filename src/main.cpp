@@ -32,7 +32,7 @@
 // WiFiClient espClient;  // ✅ Declare once globally
 // PubSubClient mqttClient(espClient);  // Use it for MQTT, etc.
 
-
+#include <RTClib.h>   // for DateTime
 #include "time.h"
 // char ntpServer[32] = "pool.ntp.org";//"bdc-lcb1.lcb1.com";//
 
@@ -632,7 +632,8 @@ Preferences prefMqtt;
   bool btEnable = false;
 
 // Added on June 25,2025 -- To support NTP in-case of no wifi (prolonged power outage)
-uint32_t lastNtpSyncEpoch = 0;
+// uint32_t lastNtpSyncEpoch = 0;
+time_t lastNtpSyncEpoch = 0;
 bool ntpAvailable = false;
 const unsigned long MAX_NTP_AGE_SEC = 24UL * 3600UL;  // 1 day
 
@@ -690,6 +691,173 @@ void mqttHostPort(){
   }
 }
 
+// NTP server settings
+#define MAX_NTP 5
+char ntpList[MAX_NTP][32];
+static unsigned long lastCheck = 0;
+
+void syncNTP(Stream &src) {
+    // Ensure Wiifi is connected
+    if (!WiFi.isConnected()) {
+        src.println("❌ WiFi not connected. Cannot sync NTP.");
+        return;
+    }
+    time_t now = time(nullptr);
+    // If time already synced (example > 2024)
+    if (now > 1700000000) {  // ~Jan 2024 timestamp
+        src.println("⏳ Already synced — skip resync.");
+        return;
+    }
+
+    struct tm timeinfo;
+    bool synced = false;
+
+    for (int i = 0; i < MAX_NTP; i++) {
+        if (strlen(ntpList[i]) == 0) continue;
+
+        configTime(3600 * 7, 0, ntpList[i]); // Example +7 timezone
+        delay(2000);  // wait for NTP
+
+        if (getLocalTime(&timeinfo)) {
+            src.printf("✅ NTP sync OK: %s\n", ntpList[i]);
+            synced = true;
+            ntpSynced = true;
+            break;
+        } else {
+            src.printf("⚠️ NTP failed: %s\n", ntpList[i]);
+        }
+    }
+
+    // Added on June 25,2025 -- To support NTP in-case of no wifi (prolonged power outage)
+    if (synced) {
+      time_t t = time(nullptr);  // current UNIX time (same as now.unixtime())
+      lastNtpSyncEpoch = t;
+
+      // Save to preferences
+      prefs.begin("ntp", false);
+      prefs.putULong("lastsync", lastNtpSyncEpoch);  // or putUInt if you're sure it fits
+      prefs.end();
+
+        // time_t t = static_cast<time_t>(lastNtpSyncEpoch);  // Convert to time_t
+        src.printf("✅ NTP sync successful. Last sync: %s", ctime(&t));  // No newline needed
+
+        // src.printf("✅ NTP sync successful. Last sync: %s\n", ctime(&lastNtpSyncEpoch));
+        printAll("✅ NTP sync successful. Last sync: ");
+    } else {
+        ntpAvailable = false;
+        printAll("❌ NTP sync failed.");
+    }
+    
+}
+
+void loadNTPSettings() {
+    prefs.begin("engine-hour", true);
+    prefs.getBytes("ntpList", ntpList, sizeof(ntpList));
+    prefs.end();
+}
+
+void saveNTPSettings() {
+    prefs.begin("engine-hour", false);
+    prefs.putBytes("ntpList", ntpList, sizeof(ntpList));
+    prefs.end();
+    Serial.println("💾 NTP settings saved!");
+}
+
+
+
+// void checkNtpStatus(Stream &out) {
+//   uint32_t nowEpoch = millis() / 1000; // uptime in seconds
+
+//   if (!ntpAvailable) {
+//     out.println("⚠️  NTP not available. Using internal time.");
+//   }
+
+//   if (lastNtpSyncEpoch == 0) {
+//     out.println("❌ No NTP sync history found.");
+//     return;
+//   }
+
+//   uint32_t timeSinceSync = nowEpoch - (lastNtpSyncEpoch % 0xFFFFFFFF);
+//   out.printf("🕒 Last NTP sync was %lu sec ago (%lu min)\n", timeSinceSync, timeSinceSync / 60);
+
+//   if (timeSinceSync < 3600) {
+//     out.println("✅ Time is accurate (synced < 1 hour ago).");
+//   } else if (timeSinceSync < MAX_NTP_AGE_SEC) {
+//     out.println("⚠️  Time may drift (last sync > 1 hour).");
+//   } else {
+//     out.println("❗ NTP sync too old (> 1 day) — risk of drift.");
+//   }
+// }
+void checkNtpStatus(Stream &out) {
+  time_t now = time(nullptr);
+  if (now < 1000000000L) { // means not synced
+    out.println("⚠️ System time not set yet!");
+    return;
+  }
+
+  long diff = now - lastNtpSyncEpoch;
+
+  if (diff < 0) {
+    out.printf("⚠️ System clock is behind last NTP sync by %ld sec\n", -diff);
+    return;
+  }
+
+  out.printf("🕒 Last NTP sync was %ld sec ago (%ld min)\n", diff, diff / 60);
+
+  if (diff > 86400) {
+    out.println("❗ NTP sync too old (> 1 day) — risk of drift.");
+  } else {
+    out.println("✅ NTP sync is recent.");
+  }
+}
+
+
+void cmd_ntp(Stream &src) {
+    src.println("📋 Saved NTP list:");
+    for (int i = 0; i < MAX_NTP; i++) {
+        if (strlen(ntpList[i]) > 0) {
+            src.printf("%d: %s\n", i + 1, ntpList[i]);
+        }
+    }
+    checkNtpStatus(src);
+}
+
+void cmd_addntp(const char *ntp, Stream &src) {
+    for (int i = 0; i < MAX_NTP; i++) {
+        if (strlen(ntpList[i]) == 0) {
+            strncpy(ntpList[i], ntp, sizeof(ntpList[i]));
+            saveNTPSettings();
+            src.printf("✅ New NTP added: %s\n", ntp);
+
+            // 👉 Optional: auto sync after adding
+            syncNTP(src);
+
+            return;
+        }
+    }
+    src.println("⚠️ NTP list full. Delete old entry first.");
+}
+void cmd_removentp(int index, Stream &src) {
+    if (index < 1 || index > MAX_NTP) {
+        src.println("⚠️ Invalid index.");
+        return;
+    }
+
+    index--;  // 1-based to 0-based
+    memset(ntpList[index], 0, sizeof(ntpList[index]));
+    saveNTPSettings();
+    src.printf("✅ NTP entry %d removed.\n", index + 1);
+}
+void cmd_clearntp(Stream &src) {
+    for (int i = 0; i < MAX_NTP; i++) {
+        memset(ntpList[i], 0, sizeof(ntpList[i]));
+    }
+    saveNTPSettings();
+    src.println("✅ All NTP entries cleared.");
+}
+// End NTP server settings
+
+
 // WIFI settings
 #define MAX_WIFI 5
 struct WiFiEntry {
@@ -709,6 +877,7 @@ void saveWiFiSettings() {
     prefs.end();
     Serial.println("💾 WiFi settings saved!");
 }
+
 void connectWiFi() {
     for (int i = 0; i < MAX_WIFI; i++) {
         if (strlen(wifiList[i].ssid) == 0) continue;
@@ -720,6 +889,9 @@ void connectWiFi() {
             printAll("✅ WiFi connected!");
             printAll("IP Address: ");
             printAll(WiFi.localIP().toString().c_str());
+            // Added on June 29,2025 -- To support NTP in-case of no wifi (prolonged power outage)
+            syncNTP(Serial);  // Sync NTP after connecting
+
             return;
         } else {
             printAll("⚠️ Failed, trying next...");
@@ -775,143 +947,7 @@ void cmd_clearwifi(Stream &src) {
     src.println("✅ All WiFi entries cleared.");
 }
 
-// NTP server settings
-#define MAX_NTP 5
-char ntpList[MAX_NTP][32];
 
-void loadNTPSettings() {
-    prefs.begin("engine-hour", true);
-    prefs.getBytes("ntpList", ntpList, sizeof(ntpList));
-    prefs.end();
-}
-
-void saveNTPSettings() {
-    prefs.begin("engine-hour", false);
-    prefs.putBytes("ntpList", ntpList, sizeof(ntpList));
-    prefs.end();
-    Serial.println("💾 NTP settings saved!");
-}
-void syncNTP(Stream &src) {
-    // Ensure Wiifi is connected
-    if (!WiFi.isConnected()) {
-        src.println("❌ WiFi not connected. Cannot sync NTP.");
-        return;
-    }
-    time_t now = time(nullptr);
-    // If time already synced (example > 2024)
-    if (now > 1700000000) {  // ~Jan 2024 timestamp
-        src.println("⏳ Already synced — skip resync.");
-        return;
-    }
-
-    struct tm timeinfo;
-    bool synced = false;
-
-    for (int i = 0; i < MAX_NTP; i++) {
-        if (strlen(ntpList[i]) == 0) continue;
-
-        configTime(3600 * 7, 0, ntpList[i]); // Example +7 timezone
-        delay(2000);  // wait for NTP
-
-        if (getLocalTime(&timeinfo)) {
-            src.printf("✅ NTP sync OK: %s\n", ntpList[i]);
-            synced = true;
-            ntpSynced = true;
-            break;
-        } else {
-            src.printf("⚠️ NTP failed: %s\n", ntpList[i]);
-        }
-    }
-
-    // if (!synced) {
-    //     src.println("❌ All NTP failed.");
-    //     ntpSynced = false;
-    // }
-
-    // Added on June 25,2025 -- To support NTP in-case of no wifi (prolonged power outage)
-    if (synced) {
-        lastNtpSyncEpoch = time(nullptr);
-        ntpAvailable = true;
-        prefs.begin("ntp", false);
-        prefs.putUInt("lastsync", lastNtpSyncEpoch);
-        prefs.end();
-        src.printf("✅ NTP sync successful. Last sync: %s\n", ctime(&lastNtpSyncEpoch));
-        printAll("✅ NTP sync successful. Last sync: ");
-    } else {
-        ntpAvailable = false;
-        printAll("❌ NTP sync failed.");
-    }
-    
-}
-
-void checkNtpStatus(Stream &out) {
-  uint32_t nowEpoch = millis() / 1000; // uptime in seconds
-
-  if (!ntpAvailable) {
-    out.println("⚠️  NTP not available. Using internal time.");
-  }
-
-  if (lastNtpSyncEpoch == 0) {
-    out.println("❌ No NTP sync history found.");
-    return;
-  }
-
-  uint32_t timeSinceSync = nowEpoch - (lastNtpSyncEpoch % 0xFFFFFFFF);
-  out.printf("🕒 Last NTP sync was %lu sec ago (%lu min)\n", timeSinceSync, timeSinceSync / 60);
-
-  if (timeSinceSync < 3600) {
-    out.println("✅ Time is accurate (synced < 1 hour ago).");
-  } else if (timeSinceSync < MAX_NTP_AGE_SEC) {
-    out.println("⚠️  Time may drift (last sync > 1 hour).");
-  } else {
-    out.println("❗ NTP sync too old (> 1 day) — risk of drift.");
-  }
-}
-
-
-void cmd_ntp(Stream &src) {
-    src.println("📋 Saved NTP list:");
-    for (int i = 0; i < MAX_NTP; i++) {
-        if (strlen(ntpList[i]) > 0) {
-            src.printf("%d: %s\n", i + 1, ntpList[i]);
-        }
-    }
-}
-
-void cmd_addntp(const char *ntp, Stream &src) {
-    for (int i = 0; i < MAX_NTP; i++) {
-        if (strlen(ntpList[i]) == 0) {
-            strncpy(ntpList[i], ntp, sizeof(ntpList[i]));
-            saveNTPSettings();
-            src.printf("✅ New NTP added: %s\n", ntp);
-
-            // 👉 Optional: auto sync after adding
-            syncNTP(src);
-
-            return;
-        }
-    }
-    src.println("⚠️ NTP list full. Delete old entry first.");
-}
-void cmd_removentp(int index, Stream &src) {
-    if (index < 1 || index > MAX_NTP) {
-        src.println("⚠️ Invalid index.");
-        return;
-    }
-
-    index--;  // 1-based to 0-based
-    memset(ntpList[index], 0, sizeof(ntpList[index]));
-    saveNTPSettings();
-    src.printf("✅ NTP entry %d removed.\n", index + 1);
-}
-void cmd_clearntp(Stream &src) {
-    for (int i = 0; i < MAX_NTP; i++) {
-        memset(ntpList[i], 0, sizeof(ntpList[i]));
-    }
-    saveNTPSettings();
-    src.println("✅ All NTP entries cleared.");
-}
-// End NTP server settings
 
 // MQTT settings
 #define MAX_MQTT 3
@@ -1092,28 +1128,28 @@ void onBuzzer(bool on) {
 
 
 
-void connectWiFi(char* ssid, char* pass) {
+// void connectWiFi(char* ssid, char* pass) {
 
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
+//   Serial.print("Connecting to ");
+//   Serial.println(ssid);
 
-  WiFi.begin(ssid, pass);
-  unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
-    delay(500);
-    Serial.print(".");
-  }
+//   WiFi.begin(ssid, pass);
+//   unsigned long start = millis();
+//   while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+//     delay(500);
+//     Serial.print(".");
+//   }
 
-  // display.clearDisplay();
+//   // display.clearDisplay();
 
-if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\n✅ WiFi connected!");
-  } else {
-    Serial.println("\n❌ WiFi connection failed.");
+// if (WiFi.status() == WL_CONNECTED) {
+//     Serial.println("\n✅ WiFi connected!");
+//   } else {
+//     Serial.println("\n❌ WiFi connection failed.");
 
-  }
+//   }
 
-}
+// }
 
 
 void loadSaveInterval() {
@@ -1580,9 +1616,11 @@ void handleSerialCommand(String cmd, Stream &src) {
     } else {
       src.println("Invalid index. Use 0 to 4.");
     }
-  } else if (cmd == "ntpstatus") {
-    checkNtpStatus(src);
-  } else if (cmd == "help") {
+  } 
+  // else if (cmd == "ntpstatus") {
+  //   checkNtpStatus(src);
+  // } 
+  else if (cmd == "help") {
     src.println("Available commands:");
     src.println("1 - Start engine");
     // src.println("0 - Stop engine");
@@ -1656,9 +1694,22 @@ void setup(){
     loadMqttFromPrefs();
 
     // Added on June 25,2025 -- To support NTP in-case of no wifi (prolonged power outage)
-    prefs.begin("ntp", true);
-    lastNtpSyncEpoch = prefs.getUInt("lastsync", 0);
-    prefs.end();
+    // prefs.begin("ntp", true);
+    // lastNtpSyncEpoch = prefs.getUInt("lastsync", 0);
+    // prefs.end();
+      prefs.begin("ntp", true);
+        if (prefs.isKey("lastsync")) {
+          lastNtpSyncEpoch = prefs.getULong("lastsync");
+          Serial.printf("🕒 Restored last NTP sync: %s", ctime((time_t*)&lastNtpSyncEpoch));
+        } else {
+          lastNtpSyncEpoch = 0;
+          Serial.println("⚠️ No previous NTP sync time found.");
+        }
+      prefs.end();
+
+    printAll("🕒 Last NTP sync at epoch: %lu (%s)\n",
+              lastNtpSyncEpoch,
+              ctime((time_t*)&lastNtpSyncEpoch));
 
     engine_name = String(engineName);
     if (engine_name.length() == 0) {
@@ -1687,6 +1738,7 @@ void setup(){
       // publish_data();
       syncNTP(Serial);
     }
+    
 
 }
 
@@ -1795,6 +1847,14 @@ void loop(){
           syncNTP(Serial);
         }
       }
+
+      // Check if we need to resync NTP periodically
+     
+      if (millis() - lastCheck > 4UL * 60UL * 60UL * 1000UL) {  // Every 4 hours
+        syncNTP(Serial);
+        lastCheck = millis();
+      }
+      // End NTP resync
 
     if (Serial.available()) {
       String cmd = Serial.readStringUntil('\n');
