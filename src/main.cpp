@@ -42,12 +42,12 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 
-#define ENGINE_INPUT_PIN 27
-#define LED_PIN 25
-#define CHECK_ENGINE_INPUT_PIN 12//DISPLAY_MODE_INPUT_PIN
-
+// Ensure pin is ordered correctly for the board
+#define ENGINE_INPUT_PIN 12
 #define MOVE_INPUT_PIN 14
+#define CHECK_ENGINE_INPUT_PIN 27
 
+#define LED_PIN 25
 #define MAX_SERVER_LEN       32
 
 
@@ -1672,7 +1672,8 @@ void setup(){
   Serial.begin(115200);
 
     pinMode(LED_PIN, OUTPUT);
-    pinMode(ENGINE_INPUT_PIN, INPUT_PULLUP); //for Hour
+    // pinMode(ENGINE_INPUT_PIN, INPUT_PULLUP); //for Hour
+    pinMode(ENGINE_INPUT_PIN, INPUT_PULLDOWN); //for Hour
 
     #ifndef INPUT_PULLDOWN
     #define INPUT_PULLDOWN INPUT_PULLDOWN_16
@@ -1899,7 +1900,7 @@ void loop(){
       lastMinuteUpdate = millis();  // Reset timer
     }
 
-    bool engineSignal = digitalRead(ENGINE_INPUT_PIN) == LOW;
+    bool engineSignal = digitalRead(ENGINE_INPUT_PIN) == HIGH;
     if (engineSignal && !engineRunning) startEngine();
     else if (!engineSignal && engineRunning) {
       stopEngine();
@@ -1910,7 +1911,7 @@ void loop(){
     if (millis() - lastMQTTSendTime >= mqttSendInterval) {  
       if (WiFi.status() == WL_CONNECTED) {
         // Send Engine Total Hour
-        ensureMqttConnected();
+        // ensureMqttConnected(); //July 12 -- Comment this line if you want to send data without checking MQTT connection
         publish_data();
       } else {
         // Optional: Retry MQTT connection here (or just skip)
@@ -1939,6 +1940,7 @@ void loop(){
     // }
 
     ensureMqttConnected();
+    // mqttClient.loop();
 
     updateDisplay(!alertDisplay);
     delay(100); // Add a small delay to avoid busy loop
