@@ -43,8 +43,14 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 
 // Ensure pin is ordered correctly for the board
-#define ENGINE_INPUT_PIN 12
-#define MOVE_INPUT_PIN 14
+// Standard board
+// #define ENGINE_INPUT_PIN 12
+// #define MOVE_INPUT_PIN 14
+// #define CHECK_ENGINE_INPUT_PIN 27
+
+// ESP32 D1 mini
+#define ENGINE_INPUT_PIN 16
+#define MOVE_INPUT_PIN 17
 #define CHECK_ENGINE_INPUT_PIN 27
 
 #define LED_PIN 25
@@ -155,6 +161,14 @@ char ssid[32], pass[32];
 
 bool resyncDoneMorning = false;
 bool resyncDoneEvening = false;
+
+// Added on July 29,2025 -- To save last sent MQTT data
+float lastSentHour = -1.0;
+int lastSentMove = -1;
+int lastSentCheckEngine = -1;
+
+#include "esp_bt_device.h"
+#include "esp_bt_main.h"
 
 
 
@@ -637,6 +651,15 @@ time_t lastNtpSyncEpoch = 0;
 bool ntpAvailable = false;
 const unsigned long MAX_NTP_AGE_SEC = 24UL * 3600UL;  // 1 day
 
+
+// Added on July 29,2025 -- To show BT macid
+void printBluetoothMAC(Stream &src) {
+  const uint8_t* mac = esp_bt_dev_get_address();
+  char macStr[18];
+  snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  src.println("Bluetooth MAC Address: " + String(macStr) + "\n");
+}
 
   // To print out on both Serial and bluetooth
 void printAll(const char *fmt, ...) {
@@ -1218,27 +1241,40 @@ void sendToMqtt(const char* topic, const char* payload) {
 
 
 void publish_data(){
+
       // reconnectMQTT(); // Reconnect MQTT if needed and see if any MQTT server is connected
-      printAll("📡 Sending to all MQTT servers\n");
+      printAll("✅ Start sending data to MQTT servers\n");
           // Send Engine Total Hour
         char payload_totalhour[16];
         dtostrf(totalEngineMinutes/60.0, 1, 2, payload_totalhour);  // width=1, precision=2
         String topic_hour = "engine/" + engine_name + "/hour";
-        sendToMqtt(topic_hour.c_str(),payload_totalhour);
+        if (lastSentHour != totalEngineMinutes / 60.0) {
+            printAll("📡 Sending Hour: %s\n", payload_totalhour);
+            sendToMqtt(topic_hour.c_str(),payload_totalhour);
+            lastSentHour = totalEngineMinutes / 60.0;  // Save last sent hour
+        }
 
         // Send Engine Total Move
         char payload_totalmove[12]; // Enough for int range
         itoa(totalMoves, payload_totalmove, 10);  // base 10
         String topic_move = "engine/" + engine_name + "/move";
-        sendToMqtt(topic_move.c_str(),payload_totalmove);
+        if (lastSentMove != totalMoves) {
+            printAll("📡 Sending Move: %s\n", payload_totalmove);
+            sendToMqtt(topic_move.c_str(),payload_totalmove);
+            lastSentMove = totalMoves;  // Save last sent move  
+        }
 
         // Send Engine malfunction
         String topic_malfunction = "engine/" + engine_name + "/malfunction";
         char engineCheckStr[10];  // Make sure the buffer is big enough
         itoa(engine_check, engineCheckStr, 10);  // 10 means base 10 (decimal)
-        sendToMqtt(topic_malfunction.c_str(),engineCheckStr);
+        if (lastSentCheckEngine != engine_check) {
+          printAll("📡 Sending Engine Check: %s\n", engineCheckStr);
+          sendToMqtt(topic_malfunction.c_str(),engineCheckStr);
+          lastSentCheckEngine = engine_check;  // Save last sent check engine status
+        }
 
-        printAll("✅ Done sending to all MQTT.\n");
+        printAll("✅ Done sending to MQTT.\n");
 }
 
 void showEngineFaultScreen() {
@@ -1617,9 +1653,9 @@ void handleSerialCommand(String cmd, Stream &src) {
       src.println("Invalid index. Use 0 to 4.");
     }
   } 
-  // else if (cmd == "ntpstatus") {
-  //   checkNtpStatus(src);
-  // } 
+  else if (cmd == "btmac") {
+    printBluetoothMAC(src);
+  }
   else if (cmd == "help") {
     src.println("Available commands:");
     src.println("1 - Start engine");
@@ -1644,6 +1680,7 @@ void handleSerialCommand(String cmd, Stream &src) {
     src.println("setmqttinterval <seconds> - Set MQTT send interval in seconds (default 10)");
     src.println("testmqtt - Test MQTT connection with current settings");
     src.println("pm <message> - Set PM message or reset it if empty");
+    src.println("btmac - Show Bluetooth MAC address");
     
 }
 }
