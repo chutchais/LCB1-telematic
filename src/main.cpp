@@ -1274,6 +1274,12 @@ void publish_data(){
           lastSentCheckEngine = engine_check;  // Save last sent check engine status
         }
 
+        prefs.begin("lastsent", false);  // true = read-only
+          prefs.putUInt("lastMove", lastSentMove);
+          prefs.putFloat("lastHour", lastSentHour);
+          prefs.putUInt("lastCheckEngine", lastSentCheckEngine);
+        prefs.end();
+
         printAll("✅ Done sending to MQTT.\n");
 }
 
@@ -1656,6 +1662,10 @@ void handleSerialCommand(String cmd, Stream &src) {
   else if (cmd == "btmac") {
     printBluetoothMAC(src);
   }
+  else if (cmd == "lastsent") {
+    src.printf("Hour: %.2f\n", lastSentHour);
+    src.printf("Move: %u\n", lastSentMove);
+  }
   else if (cmd == "help") {
     src.println("Available commands:");
     src.println("1 - Start engine");
@@ -1681,7 +1691,7 @@ void handleSerialCommand(String cmd, Stream &src) {
     src.println("testmqtt - Test MQTT connection with current settings");
     src.println("pm <message> - Set PM message or reset it if empty");
     src.println("btmac - Show Bluetooth MAC address");
-    
+    src.println("lastsent - Show last sent data to MQTT");
 }
 }
 
@@ -1758,6 +1768,13 @@ void setup(){
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
+
+    // Added July 29,2025 -- To load saved hours and moves
+    prefs.begin("lastsent", true);  // true = read-only
+    lastSentHour = prefs.getUInt("lastHour", 0);
+    lastSentMove = prefs.getFloat("lastMove", 0.0);
+    lastSentCheckEngine = prefs.getUInt("lastCheckEngine", 0);
+    prefs.end();
 
     // For Enable Bluetooth
     
@@ -1871,8 +1888,8 @@ void loop(){
         saveConfig();
     }
 
-          // Watchdog: check every 30s
-      if (millis() - lastNtpAttempt > 30000) {
+          // Watchdog: check every 2 minute
+      if (millis() - lastNtpAttempt > 2*60*1000) {
         lastNtpAttempt = millis();
 
         if (WiFi.status() != WL_CONNECTED) {
