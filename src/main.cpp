@@ -167,6 +167,8 @@ float lastSentHour = -1.0;
 int lastSentMove = -1;
 int lastSentCheckEngine = -1;
 
+unsigned long lastSentEngineMinutes = 0;  // To track last sent time
+
 #include "esp_bt_device.h"
 #include "esp_bt_main.h"
 
@@ -1245,14 +1247,30 @@ void publish_data(){
       // reconnectMQTT(); // Reconnect MQTT if needed and see if any MQTT server is connected
       printAll("✅ Start sending data to MQTT servers\n");
           // Send Engine Total Hour
-        char payload_totalhour[16];
-        dtostrf(totalEngineMinutes/60.0, 1, 2, payload_totalhour);  // width=1, precision=2
-        String topic_hour = "engine/" + engine_name + "/hour";
-        if (lastSentHour != totalEngineMinutes / 60.0) {
-            printAll("📡 Sending Hour: %s\n", payload_totalhour);
-            sendToMqtt(topic_hour.c_str(),payload_totalhour);
-            lastSentHour = totalEngineMinutes / 60.0;  // Save last sent hour
+        // char payload_totalhour[16];
+        // dtostrf(totalEngineMinutes/60.0, 1, 2, payload_totalhour);  // width=1, precision=2
+        // String topic_hour = "engine/" + engine_name + "/hour";
+        // if (lastSentHour != totalEngineMinutes / 60.0) {
+        //     printAll("📡 Sending Hour: %s\n", payload_totalhour);
+        //     sendToMqtt(topic_hour.c_str(),payload_totalhour);
+        //     lastSentHour = totalEngineMinutes / 60.0;  // Save last sent hour
+        // }
+
+        // Edit on Sep 11,2025 -- Send raw minutes as integer
+        if (lastSentEngineMinutes  != totalEngineMinutes) {
+            float hours = totalEngineMinutes / 60.0;
+            char payload_totalhour[16];
+            dtostrf(hours, 1, 2, payload_totalhour);
+            // sprintf(payload_totalhour, "%ld", totalEngineMinutes);  // send raw minutes as integer
+
+            String topic_hour = "engine/" + engine_name + "/hour";
+            printAll("📡 Sending Hour (minutes): %s\n", payload_totalhour);
+
+            sendToMqtt(topic_hour.c_str(), payload_totalhour);
+
+            lastSentEngineMinutes  = totalEngineMinutes;
         }
+
 
         // Send Engine Total Move
         char payload_totalmove[12]; // Enough for int range
@@ -1278,6 +1296,7 @@ void publish_data(){
           prefs.putUInt("lastMove", lastSentMove);
           prefs.putFloat("lastHour", lastSentHour);
           prefs.putUInt("lastCheckEngine", lastSentCheckEngine);
+          prefs.putLong("lastMinute", lastSentEngineMinutes );
         prefs.end();
 
         printAll("✅ Done sending to MQTT.\n");
@@ -1664,7 +1683,9 @@ void handleSerialCommand(String cmd, Stream &src) {
   }
   else if (cmd == "lastsent") {
     src.printf("Hour: %.2f\n", lastSentHour);
+    src.printf("Minute: %u\n", lastSentEngineMinutes);
     src.printf("Move: %u\n", lastSentMove);
+    
   }
   else if (cmd == "help") {
     src.println("Available commands:");
@@ -1697,7 +1718,37 @@ void handleSerialCommand(String cmd, Stream &src) {
 
 
 
+// MQTT Callback
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg;
+  for (uint i = 0; i < length; i++) msg += (char)payload[i];
 
+  String topic_res =  "engine/" + engine_name + "/resp";
+  if (msg.startsWith("sethour:")) {
+    float newHour = msg.substring(8).toFloat();
+    // engineHour = newHour;
+    totalEngineHours = newHour;
+    totalEngineMinutes = totalEngineHours * 60;
+    saveConfig();
+    sendToMqtt(topic_res.c_str(),("OK sethour=" + String(totalEngineHours, 2)).c_str());
+    // client.publish("engine/RS10/resp", ("OK sethour=" + String(totalEngineHours, 2)).c_str());
+  }
+  else if (msg == "gethour") {
+    sendToMqtt(topic_res.c_str(),("hour=" + String(totalEngineHours, 2)).c_str());
+    // client.publish("engine/RS10/resp", ("hour=" + String(totalEngineHours, 2)).c_str());
+  }
+  else if (msg.startsWith("setmove:")) {
+    int newMove = msg.substring(8).toInt();
+    totalMoves = newMove;
+    saveConfig();
+    sendToMqtt(topic_res.c_str(),("OK setmove=" + String(totalMoves)).c_str());
+    // client.publish("engine/RS10/resp", ("OK setmove=" + String(totalMoves)).c_str());
+  }
+  else if (msg == "getmove") {
+    // client.publish("engine/RS10/resp", ("move=" + String(totalMoves)).c_str());
+    sendToMqtt(topic_res.c_str(),("move=" + String(totalMoves)).c_str());
+  }
+}
 
 
 
@@ -1774,6 +1825,8 @@ void setup(){
     lastSentHour = prefs.getUInt("lastHour", 0);
     lastSentMove = prefs.getFloat("lastMove", 0.0);
     lastSentCheckEngine = prefs.getUInt("lastCheckEngine", 0);
+
+    lastSentEngineMinutes = prefs.getLong("lastMinute", 0.0);
     prefs.end();
 
     // For Enable Bluetooth
@@ -1793,9 +1846,14 @@ void setup(){
       // publish_data();
       syncNTP(Serial);
     }
-    
+
+    // mqttClient.setCallback(mqttCallback);
+    // mqttClient.subscribe(("engine/"+ engine_name +"/cmd").c_str());
 
 }
+
+
+
 
 
 
