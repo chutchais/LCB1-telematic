@@ -23,6 +23,7 @@
   // For Stardard ESP32 boards
   #define OLED_SDA 21
   #define OLED_SCL 22
+  
 #else
   #error "Unsupported board"
 #endif
@@ -1771,13 +1772,24 @@ void setup(){
 
     pinMode(LED_PIN, OUTPUT);
     // pinMode(ENGINE_INPUT_PIN, INPUT_PULLUP); //for Hour
-    pinMode(ENGINE_INPUT_PIN, INPUT_PULLDOWN); //for Hour
+    
 
     #ifndef INPUT_PULLDOWN
     #define INPUT_PULLDOWN INPUT_PULLDOWN_16
     #endif
-    pinMode(MOVE_INPUT_PIN, INPUT_PULLDOWN); //for move
-    pinMode(CHECK_ENGINE_INPUT_PIN,INPUT_PULLDOWN);//for Display mode UP=Hour,DOWN=Move
+    // pinMode(ENGINE_INPUT_PIN, INPUT_PULLDOWN); //for Hour
+    // pinMode(MOVE_INPUT_PIN, INPUT_PULLDOWN); //for move
+    // pinMode(CHECK_ENGINE_INPUT_PIN,INPUT_PULLDOWN);//for Display mode UP=Hour,DOWN=Move
+    
+    // Fix voltage issue on ESP32 , R1= 76K and R2=10K
+    // INPUT_PULLDOWN , internal resistance will be 45K
+    // External resistance will be 10K, thus total resistance will be 8.5K
+    // Thus voltage on pin will be 24V * 8.5K / (    76K + 8.5K) = 2.5V (safe for ESP32)
+
+    pinMode(ENGINE_INPUT_PIN, INPUT); //for Hour  
+    pinMode(CHECK_ENGINE_INPUT_PIN,INPUT);//for Display mode UP=Hour,DOWN=Move
+    pinMode(MOVE_INPUT_PIN, INPUT); //for move
+
     pinMode(BUZZER_PIN, OUTPUT);
     digitalWrite(BUZZER_PIN, HIGH);  // For active-LOW buzzer (OFF)
    // Initialize EEPROM 
