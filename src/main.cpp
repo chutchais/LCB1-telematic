@@ -623,6 +623,9 @@ Preferences prefs;
 Preferences prefMqtt;
 #define PREFNS "mqttprefs"
 
+// Added on Oct 10,2025 -- To disable WIFI power
+#include "esp_wifi.h"
+
   String engine_name = "";
   float totalEngineHours = 0.0;
   float totalEngineMins = 0.0;
@@ -909,7 +912,14 @@ void connectWiFi() {
         if (strlen(wifiList[i].ssid) == 0) continue;
 
         printAll("🔍 Trying WiFi: %s\n", wifiList[i].ssid);
+        // // Added on Oct 10,2025 -- 
+        WiFi.mode(WIFI_STA);
         WiFi.begin(wifiList[i].ssid, wifiList[i].pass);
+
+        WiFi.persistent(false);
+        WiFi.setAutoConnect(false);
+        WiFi.setAutoReconnect(true);
+        // WiFi.setTxPower(WIFI_POWER_2dBm);// Reduce power to 2dBm
 
         if (WiFi.waitForConnectResult() == WL_CONNECTED) {
             printAll("✅ WiFi connected!");
@@ -1042,6 +1052,7 @@ void ensureMqttConnected() {
             printAll("🔄 Attempting MQTT connect to %s:%u ...\n", mqttHost, mqttPort);
 
             bool connected = false;
+            mqttClient.setKeepAlive( 180 ); // setting keep alive to 180 seconds
             if (strlen(mqttUser) > 0) {
                 connected = mqttClient.connect(engine_name.c_str(), mqttUser, mqttPass);
             } else {
@@ -1768,6 +1779,12 @@ void setup(){
   showAlertScreen(image_company,"LOADING.....");
   display.display();
 
+  // Added on Oct 10,2025 Disable WiFi power save mode
+  // This helps maintain a stable connection
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_max_tx_power(82); // Set TX power to maximum (20.5 dBm)
+// For RX gain, it's more complex and often requires IDF APIs directly
+
   Serial.begin(115200);
 
     pinMode(LED_PIN, OUTPUT);
@@ -1800,8 +1817,8 @@ void setup(){
     loadNTPSettings();
     // loadMqttList();
 
-    connectWiFi();
-    // reconnectMQTT();
+    // connectWiFi();
+  
     loadMqttFromPrefs();
 
     // Added on June 25,2025 -- To support NTP in-case of no wifi (prolonged power outage)
