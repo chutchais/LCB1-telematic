@@ -658,6 +658,48 @@ bool ntpAvailable = false;
 const unsigned long MAX_NTP_AGE_SEC = 24UL * 3600UL;  // 1 day
 
 
+// Added on Oct 11,2025 -- To support Volt meter
+#define ADC_PIN 34  // GPIO34 (ADC1_CH6) on ESP32
+// CALIBRATION VALUES FOR YOUR SPECIFIC DIVIDER
+const float CALIBRATION_SLOPE = 1.118f;    // Calculated slope
+const float CALIBRATION_OFFSET = 0.092f;   // Calculated offset
+const float VOLTAGE_DIVIDER_RATIO = 11.0;  // Keep theoretical ratio
+
+// Moving average settings
+const int SAMPLE_SIZE = 20;      // Number of samples for averaging
+float voltageReadings[SAMPLE_SIZE];
+int readingIndex = 0;
+float voltageSum = 0;
+float lastValidVoltage = 0.0;
+float lastSentVoltage = 0.0;
+
+static unsigned long lastVoltageCheck = 0;
+// float readCalibratedVoltage() {
+//   int rawADC = analogRead(ADC_PIN);
+//   float vOut = (rawADC * 3.3) / 4095.0;
+//   float vIn = vOut * VOLTAGE_DIVIDER_RATIO;
+  
+//   // Apply calibration correction
+//   float calibratedVoltage = (vIn * CALIBRATION_SLOPE) + CALIBRATION_OFFSET;
+  
+//   return calibratedVoltage;
+// }
+float readStableVoltage() {
+  int rawADC = analogRead(ADC_PIN);
+  float vOut = (rawADC * 3.3) / 4095.0;
+  float vIn = vOut * VOLTAGE_DIVIDER_RATIO;
+  float currentVoltage = (vIn * CALIBRATION_SLOPE) + CALIBRATION_OFFSET;
+  
+  // Update moving average
+  voltageSum -= voltageReadings[readingIndex];
+  voltageReadings[readingIndex] = currentVoltage;
+  voltageSum += currentVoltage;
+  readingIndex = (readingIndex + 1) % SAMPLE_SIZE;
+    return voltageSum / SAMPLE_SIZE;
+}
+// End Volt meter
+
+
 // Added on July 29,2025 -- To show BT macid
 void printBluetoothMAC(Stream &src) {
   const uint8_t* mac = esp_bt_dev_get_address();
@@ -1258,15 +1300,6 @@ void publish_data(){
 
       // reconnectMQTT(); // Reconnect MQTT if needed and see if any MQTT server is connected
       printAll("✅ Start sending data to MQTT servers\n");
-          // Send Engine Total Hour
-        // char payload_totalhour[16];
-        // dtostrf(totalEngineMinutes/60.0, 1, 2, payload_totalhour);  // width=1, precision=2
-        // String topic_hour = "engine/" + engine_name + "/hour";
-        // if (lastSentHour != totalEngineMinutes / 60.0) {
-        //     printAll("📡 Sending Hour: %s\n", payload_totalhour);
-        //     sendToMqtt(topic_hour.c_str(),payload_totalhour);
-        //     lastSentHour = totalEngineMinutes / 60.0;  // Save last sent hour
-        // }
 
         // Edit on Sep 11,2025 -- Send raw minutes as integer
         if (lastSentEngineMinutes  != totalEngineMinutes) {
@@ -1303,6 +1336,28 @@ void publish_data(){
           sendToMqtt(topic_malfunction.c_str(),engineCheckStr);
           lastSentCheckEngine = engine_check;  // Save last sent check engine status
         }
+
+        // Send Battery Voltage
+        // char batteryVoltageStr[10];
+        // String topic_battery_volt = "engine/" + engine_name + "/batt_volt";
+        // char payload_battery_volt[12]; // Enough for int range
+        //   dtostrf(lastValidVoltage, 1, 2, batteryVoltageStr);
+        //   printAll("📡 Sending Battery voltage: %s\n", lastValidVoltage);
+        //   sendToMqtt(topic_battery_volt.c_str(),batteryVoltageStr);
+            char batteryVoltageStr[10];
+          String topic_battery_volt = "engine/" + engine_name + "/batt_volt";
+          
+          // Method 1: Using snprintf (recommended)
+          snprintf(batteryVoltageStr, sizeof(batteryVoltageStr), "%.2f", lastValidVoltage);
+          
+          // Or Method 2: Using dtostrf with proper width
+          // dtostrf(lastValidVoltage, 6, 2, batteryVoltageStr); // 6 chars width, 2 decimals
+          
+          printAll("📡 Sending Battery voltage: %s V\n", batteryVoltageStr);
+          sendToMqtt(topic_battery_volt.c_str(), batteryVoltageStr);
+
+
+
 
         prefs.begin("lastsent", false);  // true = read-only
           prefs.putUInt("lastMove", lastSentMove);
@@ -1388,6 +1443,14 @@ void updateDisplay(bool showNormalDisplay) {
     display.setCursor(96, 0);
     display.print(engineName);
   
+    // Added on Oct 11,2025 -- To support Volt meter
+    // float voltage = readCalibratedVoltage();
+    display.setTextSize(1);
+    display.setCursor(90, 10);
+    display.print(lastValidVoltage, 1);
+    display.println(" V");
+    // End Volt meter
+
     // Line 2: Big Total Hour in center
     display.setTextSize(2);
     char mainStr[12];
@@ -1411,6 +1474,11 @@ void updateDisplay(bool showNormalDisplay) {
 
       // checkWiFiStatusAndDisplay();
       checkRunningAndDisplay(); //Show blinking running
+
+
+
+        // Show Wifi status
+
       #if defined(ESP32)
         showWifiStatus(WiFi.isConnected()); //show Wifi status
       #elif defined(ESP8266)
@@ -1997,6 +2065,15 @@ void loop(){
         lastCheck = millis();
       }
       // End NTP resync
+
+      // Added on Oct 11,2025 -- To support Volt meter
+      float stableVolt = readStableVoltage();
+      // Update display only every 500ms or if change > 0.2V     
+      if (abs(stableVolt - lastValidVoltage) > 0.2 || millis() - lastVoltageCheck > 60UL * 1000UL) {
+        lastValidVoltage = stableVolt;
+        lastVoltageCheck = millis();
+      }
+      // End Volt meter
 
     if (Serial.available()) {
       String cmd = Serial.readStringUntil('\n');
