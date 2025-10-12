@@ -661,8 +661,17 @@ const unsigned long MAX_NTP_AGE_SEC = 24UL * 3600UL;  // 1 day
 // Added on Oct 11,2025 -- To support Volt meter
 #define ADC_PIN 34  // GPIO34 (ADC1_CH6) on ESP32
 // CALIBRATION VALUES FOR YOUR SPECIFIC DIVIDER
-const float CALIBRATION_SLOPE = 1.118f;    // Calculated slope
-const float CALIBRATION_OFFSET = 0.092f;   // Calculated offset
+// const float CALIBRATION_SLOPE = 1.118f;    // Calculated slope
+// const float CALIBRATION_OFFSET = 0.092f;   // Calculated offset
+// const float VOLTAGE_DIVIDER_RATIO = 11.0;  // Keep theoretical ratio
+
+// Range-specific calibration for 20V-30V
+const float LOW_RANGE_SLOPE = 1.118f;     // Your current calibration
+const float LOW_RANGE_OFFSET = 0.092f;
+
+// Fine-tuned calibration for 20V-30V range
+const float BATTERY_RANGE_SLOPE = 1.105f;   // Adjusted for 24V system
+const float BATTERY_RANGE_OFFSET = 0.15f;   // Adjusted for 24V system
 const float VOLTAGE_DIVIDER_RATIO = 11.0;  // Keep theoretical ratio
 
 // Moving average settings
@@ -674,26 +683,32 @@ float lastValidVoltage = 0.0;
 float lastSentVoltage = 0.0;
 
 static unsigned long lastVoltageCheck = 0;
-// float readCalibratedVoltage() {
-//   int rawADC = analogRead(ADC_PIN);
-//   float vOut = (rawADC * 3.3) / 4095.0;
-//   float vIn = vOut * VOLTAGE_DIVIDER_RATIO;
-  
-//   // Apply calibration correction
-//   float calibratedVoltage = (vIn * CALIBRATION_SLOPE) + CALIBRATION_OFFSET;
-  
-//   return calibratedVoltage;
-// }
+
 float readStableVoltage() {
+  // int rawADC = analogRead(ADC_PIN);
+  // float vOut = (rawADC * 3.3) / 4095.0;
+  // float vIn = vOut * VOLTAGE_DIVIDER_RATIO;
+  // float currentVoltage = (vIn * CALIBRATION_SLOPE) + CALIBRATION_OFFSET;
+  
+  // // Update moving average
+  // voltageSum -= voltageReadings[readingIndex];
+  // voltageReadings[readingIndex] = currentVoltage;
+  // voltageSum += currentVoltage;
+  // readingIndex = (readingIndex + 1) % SAMPLE_SIZE;
+  //   return voltageSum / SAMPLE_SIZE;
   int rawADC = analogRead(ADC_PIN);
   float vOut = (rawADC * 3.3) / 4095.0;
   float vIn = vOut * VOLTAGE_DIVIDER_RATIO;
-  float currentVoltage = (vIn * CALIBRATION_SLOPE) + CALIBRATION_OFFSET;
+  float baseVoltage  = (vIn * LOW_RANGE_SLOPE) + LOW_RANGE_OFFSET;
   
+  // Apply range-specific optimization for battery voltages
+  if (baseVoltage >= 25.0 && baseVoltage <= 32.0) {
+    baseVoltage = (vIn * BATTERY_RANGE_SLOPE) + BATTERY_RANGE_OFFSET;
+  }
   // Update moving average
   voltageSum -= voltageReadings[readingIndex];
-  voltageReadings[readingIndex] = currentVoltage;
-  voltageSum += currentVoltage;
+  voltageReadings[readingIndex] = baseVoltage;
+  voltageSum += baseVoltage;
   readingIndex = (readingIndex + 1) % SAMPLE_SIZE;
     return voltageSum / SAMPLE_SIZE;
 }
@@ -968,7 +983,7 @@ void connectWiFi() {
             printAll("IP Address: ");
             printAll(WiFi.localIP().toString().c_str());
             // Added on June 29,2025 -- To support NTP in-case of no wifi (prolonged power outage)
-            syncNTP(Serial);  // Sync NTP after connecting
+            // syncNTP(Serial);  // Sync NTP after connecting
 
             return;
         } else {
@@ -1423,33 +1438,36 @@ void updateDisplay(bool showNormalDisplay) {
     // Line 1: "Running" (if running) and engine name
     display.setTextSize(1);
 
-    // char timeStr[9];
-    // snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", now.hour(), now.minute(), now.second());
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-        currentTime.year   = timeinfo.tm_year + 1900;
-        currentTime.month  = timeinfo.tm_mon + 1;
-        currentTime.day    = timeinfo.tm_mday;
-        currentTime.hour   = timeinfo.tm_hour;
-        currentTime.minute = timeinfo.tm_min;
-        currentTime.second = timeinfo.tm_sec;
-      }
-    display.setCursor(35, 0);  // adjust X for alignment if needed
+  //  Not show Datetime -- to save space
+    // struct tm timeinfo;
+    // if (getLocalTime(&timeinfo)) {
+    //     currentTime.year   = timeinfo.tm_year + 1900;
+    //     currentTime.month  = timeinfo.tm_mon + 1;
+    //     currentTime.day    = timeinfo.tm_mday;
+    //     currentTime.hour   = timeinfo.tm_hour;
+    //     currentTime.minute = timeinfo.tm_min;
+    //     currentTime.second = timeinfo.tm_sec;
+    //   }
+    // display.setCursor(35, 0);  // adjust X for alignment if needed
+    //  char buf[9];
+    // sprintf(buf, "%d:%02d:%02d", currentTime.hour, currentTime.minute, currentTime.second);
+    // display.print(buf);
 
-    char buf[9];
-    sprintf(buf, "%d:%02d:%02d", currentTime.hour, currentTime.minute, currentTime.second);
-    display.print(buf);
+    // Added on Oct 11,2025 -- To support Volt meter
+    // float voltage = readCalibratedVoltage();
+    display.setTextSize(1);
+    display.setCursor(40, 0);
+    display.print(lastValidVoltage, 2);
+    display.println("v");
+    // End Volt meter
+
+
+   
     
     display.setCursor(96, 0);
     display.print(engineName);
   
-    // Added on Oct 11,2025 -- To support Volt meter
-    // float voltage = readCalibratedVoltage();
-    display.setTextSize(1);
-    display.setCursor(90, 10);
-    display.print(lastValidVoltage, 1);
-    display.println(" V");
-    // End Volt meter
+ 
 
     // Line 2: Big Total Hour in center
     display.setTextSize(2);
@@ -1893,19 +1911,21 @@ void setup(){
     // prefs.begin("ntp", true);
     // lastNtpSyncEpoch = prefs.getUInt("lastsync", 0);
     // prefs.end();
-      prefs.begin("ntp", true);
-        if (prefs.isKey("lastsync")) {
-          lastNtpSyncEpoch = prefs.getULong("lastsync");
-          Serial.printf("🕒 Restored last NTP sync: %s", ctime((time_t*)&lastNtpSyncEpoch));
-        } else {
-          lastNtpSyncEpoch = 0;
-          Serial.println("⚠️ No previous NTP sync time found.");
-        }
-      prefs.end();
 
-    printAll("🕒 Last NTP sync at epoch: %lu (%s)\n",
-              lastNtpSyncEpoch,
-              ctime((time_t*)&lastNtpSyncEpoch));
+    // Oct 12,2025 -- Not restore last NTP sync time here
+    //   prefs.begin("ntp", true);
+    //     if (prefs.isKey("lastsync")) {
+    //       lastNtpSyncEpoch = prefs.getULong("lastsync");
+    //       Serial.printf("🕒 Restored last NTP sync: %s", ctime((time_t*)&lastNtpSyncEpoch));
+    //     } else {
+    //       lastNtpSyncEpoch = 0;
+    //       Serial.println("⚠️ No previous NTP sync time found.");
+    //     }
+    //   prefs.end();
+
+    // printAll("🕒 Last NTP sync at epoch: %lu (%s)\n",
+    //           lastNtpSyncEpoch,
+    //           ctime((time_t*)&lastNtpSyncEpoch));
 
     engine_name = String(engineName);
     if (engine_name.length() == 0) {
@@ -1935,17 +1955,12 @@ void setup(){
 
     Serial.println("Bluetooth started! Waiting for connections...");
 
-    // mqttClient.setServer(mqttHost, mqttPort);
+    // Oct 12,2025
+    // Remark: Do not call NTP sync here, as WiFi may not be connected yet
+    // if (WiFi.status() == WL_CONNECTED) {
+    //   syncNTP(Serial);
+    // }
 
-    if (WiFi.status() == WL_CONNECTED) {
-      // WiFi is connected, synchronize time
-      // synchroniseWith_NTP_Time(Serial);   
-      // publish_data();
-      syncNTP(Serial);
-    }
-
-    // mqttClient.setCallback(mqttCallback);
-    // mqttClient.subscribe(("engine/"+ engine_name +"/cmd").c_str());
 
 }
 
@@ -1996,45 +2011,45 @@ void checkMoveInput() {
 }
 // End Counting Move
 
-void resyncNTP_period() {
-  if (WiFi.status() == WL_CONNECTED) {
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-        currentTime.year   = timeinfo.tm_year + 1900;
-        currentTime.month  = timeinfo.tm_mon + 1;
-        currentTime.day    = timeinfo.tm_mday;
-        currentTime.hour   = timeinfo.tm_hour;
-        currentTime.minute = timeinfo.tm_min;
-        currentTime.second = timeinfo.tm_sec;
+// void resyncNTP_period() {
+//   if (WiFi.status() == WL_CONNECTED) {
+//     struct tm timeinfo;
+//     if (getLocalTime(&timeinfo)) {
+//         currentTime.year   = timeinfo.tm_year + 1900;
+//         currentTime.month  = timeinfo.tm_mon + 1;
+//         currentTime.day    = timeinfo.tm_mday;
+//         currentTime.hour   = timeinfo.tm_hour;
+//         currentTime.minute = timeinfo.tm_min;
+//         currentTime.second = timeinfo.tm_sec;
 
-        // Morning resync at 07:30
-        if (currentTime.hour == 8 && currentTime.minute == 05) {
-            if (!resyncDoneMorning) {
-                Serial.println("⏰ Morning NTP Resync...");
-                // synchroniseWith_NTP_Time(Serial);
-                syncNTP(Serial);
-                resyncDoneMorning = true;
-            }
-        } else {
-            resyncDoneMorning = false; // reset flag after minute passes
-        }
+//         // Morning resync at 07:30
+//         if (currentTime.hour == 8 && currentTime.minute == 05) {
+//             if (!resyncDoneMorning) {
+//                 Serial.println("⏰ Morning NTP Resync...");
+//                 // synchroniseWith_NTP_Time(Serial);
+//                 syncNTP(Serial);
+//                 resyncDoneMorning = true;
+//             }
+//         } else {
+//             resyncDoneMorning = false; // reset flag after minute passes
+//         }
 
-        // Evening resync at 19:30 (7:30 PM)
-        if (currentTime.hour == 20 && currentTime.minute == 05) {
-            if (!resyncDoneEvening) {
-                Serial.println("⏰ Evening NTP Resync...");
-                // synchroniseWith_NTP_Time(Serial);
-                syncNTP(Serial);
-                resyncDoneEvening = true;
-            }
-        } else {
-            resyncDoneEvening = false;
-        }
-    }
+//         // Evening resync at 19:30 (7:30 PM)
+//         if (currentTime.hour == 20 && currentTime.minute == 05) {
+//             if (!resyncDoneEvening) {
+//                 Serial.println("⏰ Evening NTP Resync...");
+//                 // synchroniseWith_NTP_Time(Serial);
+//                 syncNTP(Serial);
+//                 resyncDoneEvening = true;
+//             }
+//         } else {
+//             resyncDoneEvening = false;
+//         }
+//     }
   
 
-  }
-}
+//   }
+// }
 
 void loop(){
       unsigned long now = millis();
@@ -2051,19 +2066,20 @@ void loop(){
           printAll("🔄 WiFi disconnected — trying to reconnect...");
           // WiFi.begin(ssid, pass);
           connectWiFi();
-        } else if (!ntpSynced) {
-          printAll("🔄 Trying NTP sync again...");
-          // synchroniseWith_NTP_Time(Serial);
-          syncNTP(Serial);
-        }
+        } 
+        //comment on Oct 12,2025 -- Do not try to synce NTP if not connected to WiFi
+        // else if (!ntpSynced) {
+        //   printAll("🔄 Trying NTP sync again...");
+        //   syncNTP(Serial);
+        // }
       }
 
       // Check if we need to resync NTP periodically
-     
-      if (millis() - lastCheck > 4UL * 60UL * 60UL * 1000UL) {  // Every 4 hours
-        syncNTP(Serial);
-        lastCheck = millis();
-      }
+     //comment on Oct 12,2025 -- Do not try to synce NTP if not connected to WiFi
+      // if (millis() - lastCheck > 4UL * 60UL * 60UL * 1000UL) {  // Every 4 hours
+      //   syncNTP(Serial);
+      //   lastCheck = millis();
+      // }
       // End NTP resync
 
       // Added on Oct 11,2025 -- To support Volt meter
