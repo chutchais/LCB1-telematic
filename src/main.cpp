@@ -659,7 +659,451 @@ const unsigned long MAX_NTP_AGE_SEC = 24UL * 3600UL;  // 1 day
 
 
 // Added on Oct 11,2025 -- To support Volt meter
+// Calibration structure  
+// #include <EEPROM.h>
+
 #define ADC_PIN 34  // GPIO34 (ADC1_CH6) on ESP32
+#include "esp_adc_cal.h"
+#define voltage_divider_offset 1 //2.174 // Should be a value of 2.000, but ADC input impedance loads the voltage divider, req
+
+// Global variables for resistor values
+// float R1_value = 100000.0; // 100k ohms
+// float R2_value = 10000.0;  // 10k ohms
+
+float R1 = 150000.0;  // 150k ohms
+float R2 = 10000.0;   // 10k ohms
+float DIVIDER_RATIO = (R1 + R2) / R2; // 16:1
+
+// Calibration values
+float vref_actual = 3.300;    // MEASURE this with multimeter!
+float adc_calibration = 1.0;  // ADC linearity correction
+float voltage_offset = 0.0;   // Zero offset correction
+float voltage1 = 21.0;       // First calibration point voltage
+float reading1 = 21.0;       // First calibration point reading 
+float voltage2 = 29.0;       // Second calibration point voltage
+float reading2 = 29.0;       // Second calibration point reading
+float slope = 1.0;           // Calculated slope
+float offset = 0.0;          // Calculated offset 
+
+struct CalibrationData {
+  float slope;
+  float offset;
+  uint32_t checksum;
+};
+
+CalibrationData calData;
+
+
+// struct ResistorData {
+//     float R1;
+//     float R2;
+//     uint32_t checksum;
+// };
+
+// ResistorData resistorData;
+
+// uint32_t calculateResistorChecksum();
+
+// uint32_t calculateResistorChecksum() {
+//     return (uint32_t)(R1_value * 0.001) ^ (uint32_t)(R2_value * 0.001) ^ 0x1234ABCD;
+// }
+
+void loadCalibration() {
+  prefs.begin("voltmeter", true);
+  vref_actual = prefs.getFloat("vref", 3.300);
+  adc_calibration = prefs.getFloat("adc_cal", 1.0);
+  voltage_offset = prefs.getFloat("v_offset", 0.0);
+  voltage1 = prefs.getFloat("voltage1", 21.0);
+  reading1 = prefs.getFloat("reading1", 21.0);
+  voltage2 = prefs.getFloat("voltage2", 29.0);
+  reading2 = prefs.getFloat("reading2", 29.0);
+  R1 = prefs.getFloat("R1", 150000);
+  R2 = prefs.getFloat("R2", 10000);
+  prefs.end();
+}
+void saveCalibration() {
+  prefs.begin("voltmeter", false);
+  prefs.putFloat("vref", vref_actual);
+  prefs.putFloat("adc_cal", adc_calibration);
+  prefs.putFloat("v_offset", voltage_offset);
+  prefs.putFloat("voltage1", voltage1);
+  prefs.putFloat("reading1", reading1);
+  prefs.putFloat("voltage2", voltage2);
+  prefs.putFloat("reading2", reading2);
+  prefs.putFloat("R1", R1);
+  prefs.putFloat("R2", R2);
+  DIVIDER_RATIO = (R1 + R2) / R2; // 16:1
+  prefs.end();
+}
+
+float readPreciseVoltage() {
+  // Take multiple samples with oversampling
+  long total = 0;
+  const int samples = 64;
+  
+  for (int i = 0; i < samples; i++) {
+    total += analogRead(ADC_PIN);
+    delayMicroseconds(100); // Spread out samples
+  }
+  
+  float averageADC = (total / (float)samples) * adc_calibration;
+  if (averageADC > 4095) averageADC = 4095;
+  
+  // Calculate voltage with high precision
+  float adcVoltage = (averageADC * vref_actual) / 4095.0;
+  float inputVoltage = (adcVoltage * DIVIDER_RATIO) + voltage_offset;
+  
+  return inputVoltage;
+}
+
+void measureReferenceVoltage(Stream &src,float volt_ref) {
+  src.println("\n=== MEASURE REFERENCE VOLTAGE ===");
+  src.println("CRITICAL FOR ACCURACY!");
+  src.println("");
+  src.println("1. Use multimeter on ESP32 3.3V pin");
+  src.println("2. Measure between 3.3V and GND pins");
+  src.println("3. Enter EXACT voltage (e.g., 3.28, 3.30, 3.32):");
+  
+  float measured = volt_ref;
+  if (measured >= 3.20 && measured <= 3.40) {
+    vref_actual = measured;
+    saveCalibration();
+    src.printf("✓ Reference voltage set to: %.3fV\n", vref_actual);
+    src.println("This improves accuracy by 2-5%!");
+  } else {
+    src.println("❌ Invalid voltage (should be ~3.3V)");
+  }
+}
+
+void lowPointCalibration(Stream &src,float target_volt)   {
+  src.println("\n=== LOW-POINT CALIBRATION ===");
+  src.println("For improved accuracy");
+  src.println("");
+  
+  // Point 1: Low voltage (20-22V)
+  src.printf("STEP 1: Apply ~%.2fV (e.g., %.2fV)\n", target_volt, target_volt);
+  src.println("Enter EXACT voltage from calibrated source:");
+  float voltage1 = target_volt;
+  
+  if (voltage1 < 20 || voltage1 > 22) {
+    src.println("❌ Please use 20-22V range");
+    return;
+  }
+  src.println("Measuring... (32 samples)");
+  voltage1 = target_volt;
+  reading1 = readPreciseVoltage();
+  src.printf("Device reads: %.2fV (should be: %.2fV)\n", reading1, voltage1);
+  saveCalibration();
+  
+  src.println("\n✓ LOW-POINT CALIBRATION COMPLETE");
+  src.printf("Reading: %.2fV\n", reading1);
+  src.printf("Set low-point voltage to: %.2fV\n", voltage1);
+
+}
+
+void highPointCalibration(Stream &src,float target_volt){
+  src.println("\n=== HIGH-POINT CALIBRATION ===");
+  src.println("For improved accuracy");
+  src.println("");
+  
+  // Point 2: High voltage (28-30V)
+  src.printf("STEP 2: Apply ~%.2fV (e.g., %.2fV)\n", target_volt, target_volt);
+  src.println("Enter EXACT voltage from calibrated source:");
+  float voltage2 = target_volt;
+  
+  if (voltage2 < 28 || voltage2 > 30) {
+    src.println("❌ Please use 28-30V range");
+    return;
+  }
+  
+  src.println("Measuring... (32 samples)");
+  voltage2 = target_volt;
+  reading2 = readPreciseVoltage();
+  src.printf("Device reads: %.2fV (should be: %.2fV)\n", reading2, voltage2);
+  
+  saveCalibration();
+  
+  src.println("\n✓ HIGH-POINT CALIBRATION COMPLETE");
+  src.printf("Reading: %.2fV\n", reading2);
+  src.printf("Set high-point voltage to: %.2fV\n", voltage2);
+}
+
+void calculateCalibration(Stream &src) {
+  src.println("\n=== CALCULATE CALIBRATION PARAMETERS ===");
+  src.println("Using previously saved low and high points");
+  
+  if (reading1 == reading2) {
+    src.println("❌ Error: Low and high readings are the same.");
+    return;
+  }
+  
+  // Calculate calibration parameters
+  // Using linear regression: V_actual = slope * V_measured + offset
+  slope = (voltage2 - voltage1) / (reading2 - reading1);
+  offset = voltage1 - (reading1 * slope);
+  
+  adc_calibration = slope;
+  voltage_offset = offset;
+  
+  saveCalibration();
+  
+  src.println("\n✓ CALIBRATION PARAMETERS UPDATED");
+  src.printf("Slope: %.4f\n", adc_calibration);
+  src.printf("Offset: %.3fV\n", voltage_offset);
+  
+  // Verify
+  src.println("Verification:");
+  float test1 = (reading1 * adc_calibration) + voltage_offset;
+  float test2 = (reading2 * adc_calibration) + voltage_offset;
+  src.printf("Low point: %.2fV → %.2fV\n", reading1, test1);
+  src.printf("High point: %.2fV → %.2fV\n", reading2, test2);
+}
+
+void showAccuracyInfo(Stream &src) {
+  src.println("\n=== ACCURACY INFORMATION ===");
+  src.printf("Hardware: R1=%.0fΩ, R2=%.0fΩ\n", R1, R2);
+  src.printf("Divider Ratio: %.1f:1\n", DIVIDER_RATIO);
+  src.printf("Reference Voltage: %.3fV ", vref_actual);
+  if (vref_actual == 3.300) {
+    src.println("(ASSUMED - run MEASURE_REF)");
+  } else {
+    src.println("(MEASURED)");
+  }
+  src.printf("ADC Calibration: %.4f\n", adc_calibration);
+  src.printf("Voltage Offset: %.3fV\n", voltage_offset);
+  
+  // Current performance
+  float voltage = readPreciseVoltage();
+  src.printf("\nCurrent Reading: %.2fV\n", voltage);
+  
+  if (vref_actual == 3.300) {
+    src.println("⚠️  Accuracy: ±2% (run MEASURE_REF to improve)");
+  } else if (adc_calibration == 1.0 && voltage_offset == 0.0) {
+    src.println("⚠️  Accuracy: ±1% (run TWO_POINT_CAL to improve)");
+  } else {
+    src.println("✅ Accuracy: ±0.5% (high accuracy mode)");
+  }
+}
+
+void showHardwareInfo() {
+  SerialBT.println("\n=== HARDWARE CONFIGURATION ===");
+  SerialBT.println("Board: ESP32 D1 Mini");
+  SerialBT.println("ADC Pin: GPIO35");
+  SerialBT.printf("Resistors: R1=150kΩ, R2=10kΩ\n");
+  SerialBT.printf("Voltage Range: 0-48V (Safe: 20-30V)\n");
+  SerialBT.printf("ADC Resolution: %.2fmV/bit\n", (30.0 / DIVIDER_RATIO) / 4095 * 1000);
+  SerialBT.println("Wiring: 30V → 150k → 10k → GND");
+  SerialBT.println("        ESP32 GPIO35 → between 150k & 10k");
+}
+
+
+// void saveResistorValues(Stream &src) {
+//   prefs.begin("voltmeter", false);
+    
+//     prefs.putFloat("R1", R1_value);
+//     prefs.putFloat("R2", R2_value);
+    
+//     prefs.end();
+    
+//     src.println("✓ Resistor values saved to Preferences");
+//     src.printf("R1=%.0fΩ, R2=%.0fΩ\n", R1_value, R2_value);
+// }
+
+// void loadResistorValues(Stream &src) {
+
+//     prefs.begin("voltmeter", false); // false for read/write mode
+    
+//     // Load values, use defaults if not found
+//     R1_value = prefs.getFloat("R1", 100000.0);
+//     R2_value = prefs.getFloat("R2", 10000.0);
+    
+//     src.printf("Loaded resistors: R1=%.0fΩ, R2=%.0fΩ\n", R1_value, R2_value);
+    
+//     prefs.end();
+// }
+
+
+// float ReadVoltage(byte ADC_Pin) {
+//   float calibration  = 1.000; // Adjust for ultimate accuracy when input is measured using an accurate DVM, if reading too high then use e.g. 0.99, too low use 1.01
+//   float vref = 1100;
+//   esp_adc_cal_characteristics_t adc_chars;
+//   esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+//   vref = adc_chars.vref; // Obtain the device ADC reference voltage
+//   return (analogRead(ADC_Pin) / 4095.0) * 3.3 * voltage_divider_offset * (1100 / vref) * calibration;  // ESP by design reference voltage in mV
+// }
+
+// float readVoltageWithResistors() {
+//     // int rawADC = analogRead(ADC_PIN);
+//     // float vOut = (rawADC * 3.3) / 4095.0;
+//      float vOut = (ReadVoltage(ADC_PIN)+ 0.5867) / 0.10875;
+//     // Pure voltage divider calculation
+//     // Vin = Vout * (R1 + R2) / R2
+//     // float vIn = vOut * ((R1_value + R2_value) / R2_value);
+//     float vIn = vOut;
+//     return vIn;
+// }
+void showResistorStatus(Stream &src) {
+    src.println("=== RESISTOR STATUS ===");
+    src.printf("R1: %.0f ohms\n", R1);
+    src.printf("R2: %.0f ohms\n", R2);
+    src.printf("Divider Ratio: %.3f\n", (R1 + R2) / R2);
+    src.printf("Max Input Voltage: %.1fV\n", vref_actual * ((R1 + R2) / R2));
+    // src.printf("Current Reading: %.2fV\n", readVoltageWithResistors());
+}
+// void testAccuracy(Stream &src) {
+//     src.println("=== ACCURACY TEST ===");
+//     src.println("Apply known voltages and compare:");
+//     src.println("Expected vs Measured should be very close!");
+    
+//     for (int i = 0; i < 5; i++) {
+//         float voltage = readVoltageWithResistors();
+//         src.printf("Reading %d: %.2fV\n", i+1, voltage);
+//         delay(2000);
+//     }
+// }
+// void showResistorHelp(Stream &src) {
+//     src.println("=== RESISTOR COMMANDS ===");
+//     src.println("SET_RESISTORS     - Set R1 and R2 values");
+//     src.println("R:100000,10000    - Quick set resistors");
+//     src.println("MEASURE_RESISTORS - Guide to measure actual resistors");
+//     src.println("RESISTOR_STATUS   - Show current resistor values");
+//     src.println("TEST_ACCURACY     - Test voltage reading accuracy");
+//     src.println("HELP              - This help message");
+// }
+
+// float readRawVoltage() {
+//   int rawADC = analogRead(ADC_PIN);
+//   float vOut = (rawADC * 3.3) / 4095.0;
+//   return vOut * 11.0; // Raw voltage without calibration
+// }
+
+// float readCalibratedVoltage() {
+//   float rawVoltage = readRawVoltage();
+//   return (rawVoltage * calData.slope) + calData.offset;
+// }
+
+// Single command: "R:100000,10000"
+void setResistorsCommand(Stream &src,String command) {
+    int commaPos = command.indexOf(',');
+    if (commaPos > 0) {
+        R1 = command.substring(2, commaPos).toFloat();
+        R2 = command.substring(commaPos + 1).toFloat();
+        
+        if (R1 < 1000 || R1 > 1000000 || R2 < 1000 || R2 > 1000000) {
+            src.println("✗ Resistor values out of range (1k-1M ohms)");
+            return;
+        }
+
+        DIVIDER_RATIO = (R1 + R2) / R2;
+        saveCalibration();
+        src.printf("✓ Resistors set: R1=%.0fΩ, R2=%.0fΩ\n", R1, R2);
+    }
+}
+// // Single command: "CAL:12.5,24.8,30.1"
+// void oneCommandCalibration(String command,Stream &src) {
+//     // Format: CAL:reading12v,reading24v,reading30v
+//     // Example: CAL:11.8,23.6,29.5
+//     int firstComma = command.indexOf(',');
+//     int secondComma = command.lastIndexOf(',');
+    
+//     if (firstComma > 0 && secondComma > firstComma) {
+//         float read12 = command.substring(4, firstComma).toFloat();
+//         float read24 = command.substring(firstComma + 1, secondComma).toFloat();
+//         float read30 = command.substring(secondComma + 1).toFloat();
+        
+//         // Calculate using 12V-24V pair
+//         float slope1 = (24.0 - 12.0) / (read24 - read12);
+//         float offset1 = 12.0 - (read12 * slope1);
+        
+//         // Calculate using 12V-30V pair  
+//         float slope2 = (30.0 - 12.0) / (read30 - read12);
+//         float offset2 = 12.0 - (read12 * slope2);
+        
+//         // Calculate using 24V-30V pair
+//         float slope3 = (30.0 - 24.0) / (read30 - read24);
+//         float offset3 = 24.0 - (read24 * slope3);
+        
+//         // Use averages
+//         calData.slope = (slope1 + slope2 + slope3) / 3.0;
+//         calData.offset = (offset1 + offset2 + offset3) / 3.0;
+        
+//         saveCalibration(src);
+        
+//         src.println("✓ SMART 3-POINT CALIBRATION DONE");
+//         src.printf("Slope: %.3f\n", calData.slope);
+//         src.printf("Offset: %.3f\n", calData.offset);
+        
+//         src.println("Verification (should be close to 12,24,30):");
+//         src.printf("12V: %.2f -> %.2f\n", read12, (read12 * calData.slope) + calData.offset);
+//         src.printf("24V: %.2f -> %.2f\n", read24, (read24 * calData.slope) + calData.offset);
+//         src.printf("30V: %.2f -> %.2f\n", read30, (read30 * calData.slope) + calData.offset);
+//     } else {
+//         src.println("✗ Invalid CAL command format");
+//     }
+// }
+
+// void startTwoPointCalibration(Stream &src) {
+//   src.println("\n=== TWO-POINT CALIBRATION ===");
+//   src.println("This will save calibration PERMANENTLY to EEPROM");
+//   src.println("Values will survive power cycles and resets");
+  
+//   // Point 1: Low voltage
+//   src.println("\nSTEP 1: Apply LOW known voltage (e.g., 12.00V)");
+//   src.println("Wait for reading to stabilize, then enter actual voltage:");
+  
+//   while (!src.available());
+//   float lowActual = src.parseFloat();
+//   src.read(); // Clear newline
+  
+//   // Take multiple readings for stability
+//   float lowReading = 0;
+//   for (int i = 0; i < 10; i++) {
+//     lowReading += readRawVoltage();
+//     delay(200);
+//     src.print(".");
+//   }
+//   lowReading /= 10;
+//   src.printf("\nLow point: Actual=%.2fV, Reading=%.2fV\n", lowActual, lowReading);
+  
+//   // Point 2: High voltage  
+//   src.println("\nSTEP 2: Apply HIGH known voltage (e.g., 24.00V)");
+//   src.println("Wait for reading to stabilize, then enter actual voltage:");
+  
+//   while (!src.available());
+//   float highActual = src.parseFloat();
+//   src.read(); // Clear newline
+  
+//   float highReading = 0;
+//   for (int i = 0; i < 10; i++) {
+//     highReading += readRawVoltage();
+//     delay(200);
+//     src.print(".");
+//   }
+//   highReading /= 10;
+//   src.printf("High point: Actual=%.2fV, Reading=%.2fV\n", highActual, highReading);
+  
+//   // Calculate new calibration parameters
+//   calData.slope = (highActual - lowActual) / (highReading - lowReading);
+//   calData.offset = lowActual - (lowReading * calData.slope);
+  
+//   // Save to EEPROM permanently
+//   saveCalibration(src);
+  
+//   // Verification
+//   src.println("\n=== CALIBRATION COMPLETE ===");
+//   src.printf("New Slope: %.3f\n", calData.slope);
+//   src.printf("New Offset: %.3f\n", calData.offset);
+//   src.println("✓ Saved permanently to EEPROM");
+  
+//   src.println("\nVerification readings:");
+//   for (int i = 0; i < 5; i++) {
+//     float calibrated = readCalibratedVoltage();
+//     src.printf("Reading %d: %.2fV\n", i+1, calibrated);
+//     delay(1000);
+//   }
+// }
+// Added on Oct 11,2025 -- To support Volt meter
+
 // CALIBRATION VALUES FOR YOUR SPECIFIC DIVIDER
 // const float CALIBRATION_SLOPE = 1.118f;    // Calculated slope
 // const float CALIBRATION_OFFSET = 0.092f;   // Calculated offset
@@ -684,34 +1128,15 @@ float lastSentVoltage = 0.0;
 
 static unsigned long lastVoltageCheck = 0;
 
-float readStableVoltage() {
-  // int rawADC = analogRead(ADC_PIN);
-  // float vOut = (rawADC * 3.3) / 4095.0;
-  // float vIn = vOut * VOLTAGE_DIVIDER_RATIO;
-  // float currentVoltage = (vIn * CALIBRATION_SLOPE) + CALIBRATION_OFFSET;
-  
-  // // Update moving average
-  // voltageSum -= voltageReadings[readingIndex];
-  // voltageReadings[readingIndex] = currentVoltage;
-  // voltageSum += currentVoltage;
-  // readingIndex = (readingIndex + 1) % SAMPLE_SIZE;
-  //   return voltageSum / SAMPLE_SIZE;
-  int rawADC = analogRead(ADC_PIN);
-  float vOut = (rawADC * 3.3) / 4095.0;
-  float vIn = vOut * VOLTAGE_DIVIDER_RATIO;
-  float baseVoltage  = (vIn * LOW_RANGE_SLOPE) + LOW_RANGE_OFFSET;
-  
-  // Apply range-specific optimization for battery voltages
-  if (baseVoltage >= 25.0 && baseVoltage <= 32.0) {
-    baseVoltage = (vIn * BATTERY_RANGE_SLOPE) + BATTERY_RANGE_OFFSET;
-  }
-  // Update moving average
-  voltageSum -= voltageReadings[readingIndex];
-  voltageReadings[readingIndex] = baseVoltage;
-  voltageSum += baseVoltage;
-  readingIndex = (readingIndex + 1) % SAMPLE_SIZE;
-    return voltageSum / SAMPLE_SIZE;
-}
+// float readStableVoltage() {
+
+//   float baseVoltage  = readVoltageWithResistors();
+//   voltageSum -= voltageReadings[readingIndex];
+//   voltageReadings[readingIndex] = baseVoltage;
+//   voltageSum += baseVoltage;
+//   readingIndex = (readingIndex + 1) % SAMPLE_SIZE;
+//     return voltageSum / SAMPLE_SIZE;
+// }
 // End Volt meter
 
 
@@ -1785,6 +2210,39 @@ void handleSerialCommand(String cmd, Stream &src) {
     src.printf("Move: %u\n", lastSentMove);
     
   }
+  // Added on Oct 12,2025 -- For Volatage calibration
+  else if(cmd.startsWith("vref ")){
+     int spaceIndex = cmd.indexOf(' ');
+      if (spaceIndex != -1) {
+        String valueStr = cmd.substring(spaceIndex + 1);
+        float vref = valueStr.toFloat();
+        measureReferenceVoltage(src,vref);
+      }
+  }
+   if (cmd.startsWith("lowpoint")) {
+      // startTwoPointCalibration(src);
+      lowPointCalibration(src,21);
+    }
+    else if (cmd.startsWith("highpoint")) {
+        // startTwoPointCalibration(src);
+        highPointCalibration(src,29);
+      }
+      // calculateCalibration
+    else if (cmd == "calibrate") {
+        calculateCalibration(src);
+      }
+    //  showAccuracyInfo
+    else if (cmd == "accuracy") {
+        showAccuracyInfo(src);
+      }
+      else if (cmd.startsWith("R ")) {
+      int spaceIndex = cmd.indexOf(' ');
+      if (spaceIndex != -1) {
+        String valueStr = cmd.substring(spaceIndex + 1);
+        setResistorsCommand(src,cmd);
+      }
+        
+      }
   else if (cmd == "help") {
     src.println("Available commands:");
     src.println("1 - Start engine");
@@ -1872,6 +2330,15 @@ void setup(){
 // For RX gain, it's more complex and often requires IDF APIs directly
 
   Serial.begin(115200);
+
+    // Initialize ADC for best accuracy
+    analogReadResolution(12);     // 12-bit resolution (0-4095)
+    analogSetAttenuation(ADC_11db); // 0-3.3V range
+    analogSetClockDiv(1);
+    // End ADC init
+  
+    // loadResistorValues(Serial); // Load saved resistor values
+    loadCalibration();
 
     pinMode(LED_PIN, OUTPUT);
     // pinMode(ENGINE_INPUT_PIN, INPUT_PULLUP); //for Hour
@@ -2083,12 +2550,20 @@ void loop(){
       // End NTP resync
 
       // Added on Oct 11,2025 -- To support Volt meter
-      float stableVolt = readStableVoltage();
-      // Update display only every 500ms or if change > 0.2V     
-      if (abs(stableVolt - lastValidVoltage) > 0.2 || millis() - lastVoltageCheck > 60UL * 1000UL) {
+      // float stableVolt = readStableVoltage();
+      // // Update display only every 500ms or if change > 0.2V     
+      // if (abs(stableVolt - lastValidVoltage) > 0.2 || millis() - lastVoltageCheck > 60UL * 1000UL) {
+      //   lastValidVoltage = stableVolt;
+      //   lastVoltageCheck = millis();
+      // }
+        // float stableVolt = readCalibratedVoltage();
+        // float stableVolt = readStableVoltage();
+         float stableVolt = readPreciseVoltage();
+        // Update display only every 500ms or if change > 0.2V     
+        if (abs(stableVolt - lastValidVoltage) > 0.2 || millis() - lastVoltageCheck > 60UL * 1000UL) {
         lastValidVoltage = stableVolt;
         lastVoltageCheck = millis();
-      }
+        }
       // End Volt meter
 
     if (Serial.available()) {
