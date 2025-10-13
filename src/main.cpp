@@ -167,6 +167,7 @@ bool resyncDoneEvening = false;
 float lastSentHour = -1.0;
 int lastSentMove = -1;
 int lastSentCheckEngine = -1;
+float lastSentBattery = -1.0;
 
 unsigned long lastSentEngineMinutes = 0;  // To track last sent time
 
@@ -1778,32 +1779,22 @@ void publish_data(){
         }
 
         // Send Battery Voltage
-        // char batteryVoltageStr[10];
-        // String topic_battery_volt = "engine/" + engine_name + "/batt_volt";
-        // char payload_battery_volt[12]; // Enough for int range
-        //   dtostrf(lastValidVoltage, 1, 2, batteryVoltageStr);
-        //   printAll("📡 Sending Battery voltage: %s\n", lastValidVoltage);
-        //   sendToMqtt(topic_battery_volt.c_str(),batteryVoltageStr);
-            char batteryVoltageStr[10];
+        if( abs(lastSentVoltage - lastValidVoltage) >= 0.3 ) { // Only send if change >= 0.3V
+          lastSentVoltage = lastValidVoltage;
+          // Method 1: Using snprintf   
+          char batteryVoltageStr[10];
           String topic_battery_volt = "engine/" + engine_name + "/batt_volt";
-          
-          // Method 1: Using snprintf (recommended)
           snprintf(batteryVoltageStr, sizeof(batteryVoltageStr), "%.2f", lastValidVoltage);
-          
-          // Or Method 2: Using dtostrf with proper width
-          // dtostrf(lastValidVoltage, 6, 2, batteryVoltageStr); // 6 chars width, 2 decimals
-          
           printAll("📡 Sending Battery voltage: %s V\n", batteryVoltageStr);
           sendToMqtt(topic_battery_volt.c_str(), batteryVoltageStr);
-
-
-
+        }
 
         prefs.begin("lastsent", false);  // true = read-only
           prefs.putUInt("lastMove", lastSentMove);
           prefs.putFloat("lastHour", lastSentHour);
           prefs.putUInt("lastCheckEngine", lastSentCheckEngine);
           prefs.putLong("lastMinute", lastSentEngineMinutes );
+          prefs.putFloat("lastVolt", lastSentVoltage);
         prefs.end();
 
         printAll("✅ Done sending to MQTT.\n");
@@ -2409,6 +2400,7 @@ void setup(){
     lastSentHour = prefs.getUInt("lastHour", 0);
     lastSentMove = prefs.getFloat("lastMove", 0.0);
     lastSentCheckEngine = prefs.getUInt("lastCheckEngine", 0);
+    lastSentBattery = prefs.getFloat("lastVolt", 0.0);
 
     lastSentEngineMinutes = prefs.getLong("lastMinute", 0.0);
     prefs.end();
