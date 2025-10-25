@@ -663,7 +663,7 @@ const unsigned long MAX_NTP_AGE_SEC = 24UL * 3600UL;  // 1 day
 // Calibration structure  
 // #include <EEPROM.h>
 
-#define ADC_PIN 34  // GPIO34 (ADC1_CH6) on ESP32
+#define ADC_PIN 35  // GPIO34 (ADC1_CH6) on ESP32
 #include "esp_adc_cal.h"
 #define voltage_divider_offset 1 //2.174 // Should be a value of 2.000, but ADC input impedance loads the voltage divider, req
 
@@ -678,13 +678,13 @@ float DIVIDER_RATIO = (R1 + R2) / R2; // 16:1
 // Calibration values
 float vref_actual = 3.300;    // MEASURE this with multimeter!
 float adc_calibration = 1.0;  // ADC linearity correction
-float voltage_offset = 0.0;   // Zero offset correction
+float voltage_offset = 1.0;   // Zero offset correction
 float voltage1 = 21.0;       // First calibration point voltage
 float reading1 = 21.0;       // First calibration point reading 
 float voltage2 = 29.0;       // Second calibration point voltage
 float reading2 = 29.0;       // Second calibration point reading
 float slope = 1.0;           // Calculated slope
-float offset = 0.0;          // Calculated offset 
+float offset = 1.0;          // Calculated offset 
 
 struct CalibrationData {
   float slope;
@@ -694,26 +694,18 @@ struct CalibrationData {
 
 CalibrationData calData;
 
+// Added on Oct 25,2025 -- Functions for voltmeter calibration
+const float ACTUAL_VREF = 3.30;  // Your measured 3.315V
+// const float DIVIDER_RATIO = 15.88; // (145100 + 9750) / 9750
+float FINAL_CALIBRATION = 0; // Based on your 24V test - adjust this factor
+// End of calibration
 
-// struct ResistorData {
-//     float R1;
-//     float R2;
-//     uint32_t checksum;
-// };
-
-// ResistorData resistorData;
-
-// uint32_t calculateResistorChecksum();
-
-// uint32_t calculateResistorChecksum() {
-//     return (uint32_t)(R1_value * 0.001) ^ (uint32_t)(R2_value * 0.001) ^ 0x1234ABCD;
-// }
 
 void loadCalibration() {
   prefs.begin("voltmeter", true);
   vref_actual = prefs.getFloat("vref", 3.300);
   adc_calibration = prefs.getFloat("adc_cal", 1.0);
-  voltage_offset = prefs.getFloat("v_offset", 0.0);
+  voltage_offset = prefs.getFloat("v_offset", 1.0);
   voltage1 = prefs.getFloat("voltage1", 21.0);
   reading1 = prefs.getFloat("reading1", 21.0);
   voltage2 = prefs.getFloat("voltage2", 29.0);
@@ -738,23 +730,37 @@ void saveCalibration() {
 }
 
 float readPreciseVoltage() {
-  // Take multiple samples with oversampling
-  long total = 0;
-  const int samples = 64;
+  // // Take multiple samples with oversampling
+  // long total = 0;
+  // const int samples = 10;
   
-  for (int i = 0; i < samples; i++) {
-    total += analogRead(ADC_PIN);
-    delayMicroseconds(100); // Spread out samples
+  // for (int i = 0; i < samples; i++) {
+  //   total += analogRead(ADC_PIN);
+  //   delayMicroseconds(100); // Spread out samples
+  // }
+  
+  // float averageADC = (total / (float)samples) * adc_calibration;
+  // if (averageADC > 4095) averageADC = 4095;
+  
+  // // Calculate voltage with high precision
+  // float adcVoltage = (averageADC * vref_actual) / 4095.0;
+  // float inputVoltage = (adcVoltage * DIVIDER_RATIO) + voltage_offset;
+  
+  // return inputVoltage;
+  int adc_value = 0;
+  for(int i = 0; i < 20; i++) {
+    adc_value += analogRead(ADC_PIN);
+    delay(2);
   }
+  adc_value /= 20;
   
-  float averageADC = (total / (float)samples) * adc_calibration;
-  if (averageADC > 4095) averageADC = 4095;
-  
-  // Calculate voltage with high precision
-  float adcVoltage = (averageADC * vref_actual) / 4095.0;
-  float inputVoltage = (adcVoltage * DIVIDER_RATIO) + voltage_offset;
-  
-  return inputVoltage;
+  // Use your ACTUAL 3.315V reference
+
+  float voltage_at_pin = (adc_value / 4095.0) * ACTUAL_VREF;
+  // float input_voltage = voltage_at_pin * DIVIDER_RATIO;
+  // float input_voltage = voltage_at_pin * DIVIDER_RATIO * FINAL_CALIBRATION;
+  float input_voltage = voltage_at_pin * DIVIDER_RATIO * voltage_offset;
+  return input_voltage;
 }
 
 void measureReferenceVoltage(Stream &src,float volt_ref) {
@@ -786,19 +792,18 @@ void lowPointCalibration(Stream &src,float target_volt)   {
   src.println("Enter EXACT voltage from calibrated source:");
   float voltage1 = target_volt;
   
-  if (voltage1 < 20 || voltage1 > 22) {
-    src.println("❌ Please use 20-22V range");
-    return;
-  }
-  src.println("Measuring... (32 samples)");
+  src.println("Measuring...");
   voltage1 = target_volt;
   reading1 = readPreciseVoltage();
   src.printf("Device reads: %.2fV (should be: %.2fV)\n", reading1, voltage1);
+  // FINAL_CALIBRATION = voltage1 / reading1;
+  voltage_offset = voltage1 / reading1;
   saveCalibration();
   
   src.println("\n✓ LOW-POINT CALIBRATION COMPLETE");
   src.printf("Reading: %.2fV\n", reading1);
   src.printf("Set low-point voltage to: %.2fV\n", voltage1);
+  src.printf("Voltage Offset : %.2fV\n", voltage_offset);
 
 }
 
@@ -827,6 +832,24 @@ void highPointCalibration(Stream &src,float target_volt){
   src.println("\n✓ HIGH-POINT CALIBRATION COMPLETE");
   src.printf("Reading: %.2fV\n", reading2);
   src.printf("Set high-point voltage to: %.2fV\n", voltage2);
+}
+
+void resetCalibration(Stream &src){
+  src.println("\n=== Reset CALIBRATION ===");
+  src.println("");
+  
+  slope = 1.0;
+  offset = 1.0;
+
+  R1 = 150000.0;  // 150k ohms
+  R2 = 10000.0;   // 10k ohms
+  DIVIDER_RATIO = (R1 + R2) / R2; // 16:1
+  
+  adc_calibration = slope;
+  voltage_offset = offset;
+  saveCalibration();
+  
+  src.println("\n✓ RESET CALIBRATION COMPLETE");
 }
 
 void calculateCalibration(Stream &src) {
@@ -2212,7 +2235,7 @@ void handleSerialCommand(String cmd, Stream &src) {
   }
    if (cmd.startsWith("lowpoint")) {
       // startTwoPointCalibration(src);
-      lowPointCalibration(src,21);
+      lowPointCalibration(src,24);
     }
     else if (cmd.startsWith("highpoint")) {
         // startTwoPointCalibration(src);
@@ -2221,6 +2244,10 @@ void handleSerialCommand(String cmd, Stream &src) {
       // calculateCalibration
     else if (cmd == "calibrate") {
         calculateCalibration(src);
+      }
+         // reset Calibration
+    else if (cmd == "resetcalibrate") {
+        resetCalibration(src);
       }
     //  showAccuracyInfo
     else if (cmd == "accuracy") {
